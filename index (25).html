@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Precision Face Ratio</title>
+    <script defer src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; background: #121212; color: #e0e0e0; margin: 0; padding: 10px; }
+        h2 { color: #ffffff; margin-bottom: 5px; }
+        .instructions { background: #2c2c2c; padding: 12px; border-radius: 8px; margin-bottom: 15px; font-size: 1rem; border: 1px solid #444; transition: 0.3s; }
+        .highlight { color: #00bcd4; font-weight: bold; }
+        
+        #canvas-container { position: relative; width: 100%; max-width: 500px; margin: auto; border: 2px solid #555; overflow: hidden; touch-action: none; min-height: 300px; display: flex; align-items: center; justify-content: center; background: #000; border-radius: 8px;}
+        canvas { width: 100%; display: block; }
+        
+        #result { font-size: 1.6rem; color: #ffd700; margin: 20px 0; min-height: 1.5em; font-weight: bold; }
+        
+        .btn-group { display: flex; gap: 10px; justify-content: center; margin-top: 10px; }
+        button, label { background: #007bff; color: white; padding: 12px 24px; border-radius: 6px; border: none; font-size: 1rem; cursor: pointer; transition: 0.2s; user-select: none; }
+        label:active, button:active { transform: scale(0.98); }
+        button:disabled, label.disabled { background: #444; cursor: not-allowed; opacity: 0.6; }
+        input[type="file"] { display: none; }
+        
+        /* Spinner */
+        .loader { border: 4px solid #333; border-top: 4px solid #00bcd4; border-radius: 50%; width: 40px; height: 40px; animation: spin 0.8s linear infinite; display: none; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+    <h2>Precision Ratio Tool</h2>
+
+    <div class="instructions" id="status-msg">Initializing AI...</div>
+
+    <div id="result">Ratio: --</div>
+
+    <div id="canvas-container">
+        <div class="loader" id="loader"></div>
+        <canvas id="mainCanvas"></canvas>
+    </div>
+
+    <div class="btn-group">
+        <label for="upload" id="upload-label" class="disabled">Upload Photo</label>
+        <input type="file" id="upload" accept="image/*" disabled>
+        <button onclick="resetApp()" id="reset-btn" disabled>Reset</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('mainCanvas');
+        const ctx = canvas.getContext('2d');
+        const statusMsg = document.getElementById('status-msg');
+        const resultDiv = document.getElementById('result');
+        const uploadInput = document.getElementById('upload');
+        const uploadLabel = document.getElementById('upload-label');
+        const resetBtn = document.getElementById('reset-btn');
+        const loader = document.getElementById('loader');
+
+        let img = new Image();
+        let aiData = null; // Stores AI landmarks
+        let hairlinePoint = null; // Stores user click
+        let scaleX = 1, scaleY = 1;
+
+        // 1. Load Models
+        async function loadModels() {
+            try {
+                const MODEL_URL = 'https://justadudewhohacks.github.io/face-api.js/models';
+                await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+                await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+                
+                statusMsg.innerHTML = "AI Ready. <span class='highlight'>Upload a clear photo.</span>";
+                uploadInput.removeAttribute('disabled');
+                uploadLabel.classList.remove('disabled');
+            } catch (err) {
+                statusMsg.innerText = "Error loading AI. Ensure you are using a local server (CORS).";
+                statusMsg.style.color = "#ff4444";
+            }
+        }
+        loadModels();
+
+        // 2. Handle Upload
+        uploadInput.addEventListener('change', async (e) => {
+            if (!e.target.files[0]) return;
+            
+            // UI Setup
+            resetApp(true); // Keep models, clear canvas
+            loader.style.display = "block";
+            statusMsg.innerText = "Scanning face structure...";
+            
+            const file = e.target.files[0];
+            const reader = new FileReader();
+            
+            reader.onload = async (event) => {
+                img.src = event.target.result;
+                img.onload = async () => {
+                    // Setup Canvas
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    ctx.drawImage(img, 0, 0);
+                    
+                    // Run AI
+                    await detectFace();
+                };
+            };
+            reader.readAsDataURL(file);
+        });
+
+        // 3. AI Detection
+        async function detectFace() {
+            const detection = await faceapi.detectSingleFace(img, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks();
+            loader.style.display = "none";
+            resetBtn.removeAttribute('disabled');
+
+            if (!detection) {
+                statusMsg.innerText = "No face found. Try a clearer photo.";
+                return;
+            }
+
+            // Store AI Data
+            const lm = detection.landmarks.positions;
+            
+            // 0 = Left Ear/Jaw, 16 = Right Ear/Jaw, 8 = Bottom Chin
+            aiData = {
+                left: lm[0],
+                right: lm[16],
+                chin: lm[8]
+            };
+
+            // Draw Initial State
+            drawScene();
+            
+            // Ask User for Hairline
+            statusMsg.innerHTML = "Face Locked. <span class='highlight'>TAP your Hairline now.</span>";
+            statusMsg.style.background = "#004085";
+        }
+
+        // 4. Handle User Click (Hairline)
+        canvas.addEventListener('pointerdown', (e) => {
+            if (!aiData || hairlinePoint) return; // Only allow one click
+
+            const rect = canvas.getBoundingClientRect();
+            scaleX = canvas.width / rect.width;
+            scaleY = canvas.height / rect.height;
+            
+            hairlinePoint = {
+                x: (e.clientX - rect.left) * scaleX,
+                y: (e.clientY - rect.top) * scaleY
+            };
+
+            calculateAndFinish();
+        });
+
+        function calculateAndFinish() {
+            drawScene(); // Redraw with new hairline point
+            
+            // Math
+            const widthPx = Math.hypot(aiData.right.x - aiData.left.x, aiData.right.y - aiData.left.y);
+            const heightPx = Math.hypot(aiData.chin.x - hairlinePoint.x, aiData.chin.y - hairlinePoint.y);
+            
+            const ratio = (heightPx / widthPx).toFixed(3);
+            
+            resultDiv.innerHTML = `Ratio: <span style="font-size:1.8rem; color:#00bcd4">${ratio}</span>`;
+            statusMsg.innerText = "Calculation Complete.";
+            statusMsg.style.background = "#28a745";
+        }
+
+        function drawScene() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0);
+
+            if (!aiData) return;
+
+            // 1. Draw Width Line (AI calculated)
+            drawLine(aiData.left, aiData.right, "#00bcd4", 4); 
+            drawDot(aiData.left, "#00bcd4");
+            drawDot(aiData.right, "#00bcd4");
+
+            // 2. Draw Chin Dot (AI calculated)
+            drawDot(aiData.chin, "#ff4444");
+
+            // 3. Draw Height Line (If user clicked)
+            if (hairlinePoint) {
+                drawLine(hairlinePoint, aiData.chin, "#ff4444", 4);
+                drawDot(hairlinePoint, "#ff4444");
+            }
+        }
+
+        // --- Helpers ---
+        function drawLine(p1, p2, color, width) {
+            ctx.strokeStyle = color;
+            ctx.lineWidth = canvas.width * 0.005; 
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.stroke();
+        }
+
+        function drawDot(p, color) {
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, canvas.width * 0.01, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        function resetApp(preserveAI = false) {
+            aiData = null;
+            hairlinePoint = null;
+            resultDiv.innerText = "Ratio: --";
+            if (!preserveAI) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                statusMsg.innerHTML = "Ready. <span class='highlight'>Upload a photo.</span>";
+                statusMsg.style.background = "#2c2c2c";
+            }
+        }
+    </script>
+</body>
+</html>
